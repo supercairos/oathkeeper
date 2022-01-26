@@ -34,6 +34,7 @@ import (
 
 	"github.com/urfave/negroni"
 
+	"github.com/ory/oathkeeper/api"
 	"github.com/ory/oathkeeper/driver/configuration"
 	"github.com/ory/oathkeeper/internal"
 
@@ -55,9 +56,9 @@ func TestDecisionAPI(t *testing.T) {
 	viper.Set(configuration.ViperKeyErrorsWWWAuthenticateIsEnabled, true)
 	reg := internal.NewRegistry(conf).WithBrokenPipelineMutator()
 
-	d := reg.DecisionHandler()
-
-	n := negroni.New(d)
+	n := negroni.New()
+	n.Use(reg.DecisionHandler())
+	n.Use(reg.DecisionTraefikHandler())
 	n.UseHandler(httprouter.New())
 
 	ts := httptest.NewServer(n)
@@ -93,6 +94,22 @@ func TestDecisionAPI(t *testing.T) {
 		Upstream:       rule.Upstream{URL: "", StripPath: "/strip-path/", PreserveHost: true},
 	}
 
+	deciders := []string{
+		// "generic",
+		"traefik",
+	}
+	defaultTransformers := map[string]func(r *http.Request){
+		"traefik": func(r *http.Request) {
+			r.Header.Set(api.TraefikProto, r.URL.Scheme)
+			r.Header.Set(api.TraefikHost, r.URL.Host)
+			r.Header.Set(api.TraefikMethod, r.Method)
+			r.Header.Set(api.TraefikURI, r.URL.Path[len(api.DecisionTraefikPath):]) // This would not be in a real request either.
+
+			r.URL.Path = "/decisions/traefik"
+			r.Method = "GET"
+		},
+	}
+
 	for k, tc := range []struct {
 		url         string
 		code        int
@@ -100,49 +117,61 @@ func TestDecisionAPI(t *testing.T) {
 		messages    []string
 		rulesRegexp []rule.Rule
 		rulesGlob   []rule.Rule
-		transform   func(r *http.Request)
+		transformers map[string]func(r *http.Request)
 		authz       string
 		d           string
 	}{
 		{
 			d:           "should fail because url does not exist in rule set",
-			url:         ts.URL + "/decisions" + "/invalid",
+			url:         "/invalid",
 			rulesRegexp: []rule.Rule{},
 			rulesGlob:   []rule.Rule{},
 			code:        http.StatusNotFound,
 		},
 		{
 			d:           "should fail because url does exist but is matched by two rulesRegexp",
-			url:         ts.URL + "/decisions" + "/authn-noop/1234",
+			url:         "/authn-noop/1234",
 			rulesRegexp: []rule.Rule{ruleNoOpAuthenticator, ruleNoOpAuthenticator},
 			rulesGlob:   []rule.Rule{ruleNoOpAuthenticatorGLOB, ruleNoOpAuthenticatorGLOB},
 			code:        http.StatusInternalServerError,
 		},
 		{
 			d:           "should pass",
-			url:         ts.URL + "/decisions" + "/authn-noop/1234",
+			url:         "/authn-noop/1234",
 			rulesRegexp: []rule.Rule{ruleNoOpAuthenticator},
 			rulesGlob:   []rule.Rule{ruleNoOpAuthenticatorGLOB},
 			code:        http.StatusOK,
-			transform: func(r *http.Request) {
-				r.Header.Add("Authorization", "bearer token")
+			transformers: map[string]func(r *http.Request){
+				"generic": func(r *http.Request) {
+					r.Header.Add("Authorization", "bearer token")
+				},
+				"traefik": func(r *http.Request) {
+					r.Header.Add("Authorization", "bearer token")
+					defaultTransformers["traefik"](r)
+				},
 			},
 			authz: "bearer token",
 		},
 		{
 			d:           "should pass",
-			url:         ts.URL + "/decisions" + "/strip-path/authn-noop/1234",
+			url:         "/strip-path/authn-noop/1234",
 			rulesRegexp: []rule.Rule{ruleNoOpAuthenticatorModifyUpstream},
 			rulesGlob:   []rule.Rule{ruleNoOpAuthenticatorModifyUpstreamGLOB},
 			code:        http.StatusOK,
-			transform: func(r *http.Request) {
-				r.Header.Add("Authorization", "bearer token")
+			transformers: map[string]func(r *http.Request){
+				"generic": func(r *http.Request) {
+					r.Header.Add("Authorization", "bearer token")
+				},
+				"traefik": func(r *http.Request) {
+					r.Header.Add("Authorization", "bearer token")
+					defaultTransformers["traefik"](r)
+				},
 			},
 			authz: "bearer token",
 		},
 		{
 			d:   "should fail because no authorizer was configured",
-			url: ts.URL + "/decisions" + "/authn-anon/authz-none/cred-none/1234",
+			url: "/authn-anon/authz-none/cred-none/1234",
 			rulesRegexp: []rule.Rule{{
 				Match:          &rule.Match{Methods: []string{"GET"}, URL: ts.URL + "/authn-anon/authz-none/cred-none/<[0-9]+>"},
 				Authenticators: []rule.Handler{{Handler: "anonymous"}},
@@ -153,14 +182,20 @@ func TestDecisionAPI(t *testing.T) {
 				Authenticators: []rule.Handler{{Handler: "anonymous"}},
 				Upstream:       rule.Upstream{URL: ""},
 			}},
-			transform: func(r *http.Request) {
-				r.Header.Add("Authorization", "bearer token")
+			transformers: map[string]func(r *http.Request){
+				"generic": func(r *http.Request) {
+					r.Header.Add("Authorization", "bearer token")
+				},
+				"traefik": func(r *http.Request) {
+					r.Header.Add("Authorization", "bearer token")
+					defaultTransformers["traefik"](r)
+				},
 			},
 			code: http.StatusUnauthorized,
 		},
 		{
 			d:   "should fail because no mutator was configured",
-			url: ts.URL + "/decisions" + "/authn-anon/authz-allow/cred-none/1234",
+			url: "/authn-anon/authz-allow/cred-none/1234",
 			rulesRegexp: []rule.Rule{{
 				Match:          &rule.Match{Methods: []string{"GET"}, URL: ts.URL + "/authn-anon/authz-allow/cred-none/<[0-9]+>"},
 				Authenticators: []rule.Handler{{Handler: "anonymous"}},
@@ -177,7 +212,7 @@ func TestDecisionAPI(t *testing.T) {
 		},
 		{
 			d:   "should pass with anonymous and everything else set to noop",
-			url: ts.URL + "/decisions" + "/authn-anon/authz-allow/cred-noop/1234",
+			url: "/authn-anon/authz-allow/cred-noop/1234",
 			rulesRegexp: []rule.Rule{{
 				Match:          &rule.Match{Methods: []string{"GET"}, URL: ts.URL + "/authn-anon/authz-allow/cred-noop/<[0-9]+>"},
 				Authenticators: []rule.Handler{{Handler: "anonymous"}},
@@ -197,7 +232,7 @@ func TestDecisionAPI(t *testing.T) {
 		},
 		{
 			d:   "should fail when authorizer fails",
-			url: ts.URL + "/decisions" + "/authn-anon/authz-deny/cred-noop/1234",
+			url: "/authn-anon/authz-deny/cred-noop/1234",
 			rulesRegexp: []rule.Rule{{
 				Match:          &rule.Match{Methods: []string{"GET"}, URL: ts.URL + "/authn-anon/authz-deny/cred-noop/<[0-9]+>"},
 				Authenticators: []rule.Handler{{Handler: "anonymous"}},
@@ -216,7 +251,7 @@ func TestDecisionAPI(t *testing.T) {
 		},
 		{
 			d:   "should fail when authenticator fails",
-			url: ts.URL + "/decisions" + "/authn-broken/authz-none/cred-none/1234",
+			url: "/authn-broken/authz-none/cred-none/1234",
 			rulesRegexp: []rule.Rule{{
 				Match:          &rule.Match{Methods: []string{"GET"}, URL: ts.URL + "/authn-broken/authz-none/cred-none/<[0-9]+>"},
 				Authenticators: []rule.Handler{{Handler: "unauthorized"}},
@@ -231,7 +266,7 @@ func TestDecisionAPI(t *testing.T) {
 		},
 		{
 			d:   "should fail when mutator fails",
-			url: ts.URL + "/decisions" + "/authn-anonymous/authz-allow/cred-broken/1234",
+			url: "/authn-anonymous/authz-allow/cred-broken/1234",
 			rulesRegexp: []rule.Rule{{
 				Match:          &rule.Match{Methods: []string{"GET"}, URL: ts.URL + "/authn-anonymous/authz-allow/cred-broken/<[0-9]+>"},
 				Authenticators: []rule.Handler{{Handler: "anonymous"}},
@@ -250,7 +285,7 @@ func TestDecisionAPI(t *testing.T) {
 		},
 		{
 			d:   "should fail when one of the mutators fails",
-			url: ts.URL + "/decisions" + "/authn-anonymous/authz-allow/cred-broken/1234",
+			url: "/authn-anonymous/authz-allow/cred-broken/1234",
 			rulesRegexp: []rule.Rule{{
 				Match:          &rule.Match{Methods: []string{"GET"}, URL: ts.URL + "/authn-anonymous/authz-allow/cred-broken/<[0-9]+>"},
 				Authenticators: []rule.Handler{{Handler: "anonymous"}},
@@ -269,7 +304,7 @@ func TestDecisionAPI(t *testing.T) {
 		},
 		{
 			d:   "should fail when authorizer fails and send www_authenticate as defined in the rule",
-			url: ts.URL + "/decisions" + "/authn-anon/authz-deny/cred-noop/1234",
+			url: "/authn-anon/authz-deny/cred-noop/1234",
 			rulesRegexp: []rule.Rule{{
 				Match:          &rule.Match{Methods: []string{"GET"}, URL: ts.URL + "/authn-anon/authz-deny/cred-noop/<[0-9]+>"},
 				Authenticators: []rule.Handler{{Handler: "anonymous"}},
@@ -290,7 +325,7 @@ func TestDecisionAPI(t *testing.T) {
 		},
 		{
 			d:   "should not pass Content-Length from client",
-			url: ts.URL + "/decisions" + "/authn-anon/authz-allow/cred-noop/1234",
+			url: "/authn-anon/authz-allow/cred-noop/1234",
 			rulesRegexp: []rule.Rule{{
 				Match:          &rule.Match{Methods: []string{"GET"}, URL: ts.URL + "/authn-anon/authz-allow/cred-noop/<[0-9]+>"},
 				Authenticators: []rule.Handler{{Handler: "anonymous"}},
@@ -306,41 +341,60 @@ func TestDecisionAPI(t *testing.T) {
 				Upstream:       rule.Upstream{URL: ""},
 			}},
 			reqBody: []byte("non-empty body"),
-			transform: func(r *http.Request) {
-				r.Header.Add("Content-Length", "1337")
+			transformers: map[string]func(r *http.Request){
+				"generic": func(r *http.Request) {
+					r.Header.Add("Content-Length", "1337")
+				},
+				"traefik": func(r *http.Request) {
+					r.Header.Add("Content-Length", "1337")
+					defaultTransformers["traefik"](r)
+				},
 			},
 			code:  http.StatusOK,
 			authz: "",
 		},
 	} {
-		t.Run(fmt.Sprintf("case=%d/description=%s", k, tc.d), func(t *testing.T) {
-			testFunc := func(strategy configuration.MatchingStrategy) {
-				require.NoError(t, reg.RuleRepository().SetMatchingStrategy(context.Background(), strategy))
-				req, err := http.NewRequest("GET", tc.url, bytes.NewBuffer(tc.reqBody))
-				require.NoError(t, err)
-				if tc.transform != nil {
-					tc.transform(req)
-				}
+		testFunc := func(t *testing.T, strategy configuration.MatchingStrategy, decider string) {
+			require.NoError(t, reg.RuleRepository().SetMatchingStrategy(context.Background(), strategy))
+			req, err := http.NewRequest("GET", ts.URL+"/decisions/"+decider+tc.url, bytes.NewBuffer(tc.reqBody))
+			require.NoError(t, err)
 
-				res, err := http.DefaultClient.Do(req)
-				require.NoError(t, err)
-
-				entireBody, err := ioutil.ReadAll(res.Body)
-				require.NoError(t, err)
-				defer res.Body.Close()
-
-				assert.Equal(t, tc.authz, res.Header.Get("Authorization"))
-				assert.Equal(t, tc.code, res.StatusCode)
-				assert.Equal(t, strconv.Itoa(len(entireBody)), res.Header.Get("Content-Length"))
+			var transformer func(*http.Request)
+			if tc.transformers != nil {
+				transformer, _ = tc.transformers[decider]
 			}
-			t.Run("regexp", func(t *testing.T) {
-				reg.RuleRepository().(*rule.RepositoryMemory).WithRules(tc.rulesRegexp)
-				testFunc(configuration.Regexp)
+			if transformer == nil {
+				transformer, _ = defaultTransformers[decider]
+			}
+
+			if transformer != nil {
+				transformer(req)
+			}
+
+			res, err := http.DefaultClient.Do(req)
+			require.NoError(t, err)
+
+			entireBody, err := ioutil.ReadAll(res.Body)
+			require.NoError(t, err)
+			defer res.Body.Close()
+
+			assert.Equal(t, tc.authz, res.Header.Get("Authorization"))
+			assert.Equal(t, tc.code, res.StatusCode)
+			assert.Equal(t, strconv.Itoa(len(entireBody)), res.Header.Get("Content-Length"))
+		}
+
+		for _, decider := range deciders {
+			t.Run(fmt.Sprintf("decider=%s/case=%d/description=%s", decider, k, tc.d), func(t *testing.T) {
+				t.Run("regexp", func(t *testing.T) {
+					reg.RuleRepository().(*rule.RepositoryMemory).WithRules(tc.rulesRegexp)
+					testFunc(t, configuration.Regexp, decider)
+				})
+
+				t.Run("glob", func(t *testing.T) {
+					reg.RuleRepository().(*rule.RepositoryMemory).WithRules(tc.rulesRegexp)
+					testFunc(t, configuration.Glob, decider)
+				})
 			})
-			t.Run("glob", func(t *testing.T) {
-				reg.RuleRepository().(*rule.RepositoryMemory).WithRules(tc.rulesRegexp)
-				testFunc(configuration.Glob)
-			})
-		})
+		}
 	}
 }

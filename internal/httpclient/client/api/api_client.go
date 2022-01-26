@@ -30,8 +30,6 @@ type ClientOption func(*runtime.ClientOperation)
 
 // ClientService is the interface for Client methods
 type ClientService interface {
-	Decisions(params *DecisionsParams, opts ...ClientOption) (*DecisionsOK, error)
-
 	GetRule(params *GetRuleParams, opts ...ClientOption) (*GetRuleOK, error)
 
 	GetVersion(params *GetVersionParams, opts ...ClientOption) (*GetVersionOK, error)
@@ -44,51 +42,11 @@ type ClientService interface {
 
 	ListRules(params *ListRulesParams, opts ...ClientOption) (*ListRulesOK, error)
 
+	MakeGenericDecision(params *MakeGenericDecisionParams) (*MakeGenericDecisionOK, opts ...ClientOption, error)
+
+	MakeTraefikDecision(params *MakeTraefikDecisionParams) (*MakeTraefikDecisionOK, opts ...ClientOption, error)
+
 	SetTransport(transport runtime.ClientTransport)
-}
-
-/*
-  Decisions accesses control decision API
-
-  > This endpoint works with all HTTP Methods (GET, POST, PUT, ...) and matches every path prefixed with /decision.
-
-This endpoint mirrors the proxy capability of ORY Oathkeeper's proxy functionality but instead of forwarding the
-request to the upstream server, returns 200 (request should be allowed), 401 (unauthorized), or 403 (forbidden)
-status codes. This endpoint can be used to integrate with other API Proxies like Ambassador, Kong, Envoy, and many more.
-*/
-func (a *Client) Decisions(params *DecisionsParams, opts ...ClientOption) (*DecisionsOK, error) {
-	// TODO: Validate the params before sending
-	if params == nil {
-		params = NewDecisionsParams()
-	}
-	op := &runtime.ClientOperation{
-		ID:                 "decisions",
-		Method:             "GET",
-		PathPattern:        "/decisions",
-		ProducesMediaTypes: []string{"application/json"},
-		ConsumesMediaTypes: []string{"application/json"},
-		Schemes:            []string{"http", "https"},
-		Params:             params,
-		Reader:             &DecisionsReader{formats: a.formats},
-		Context:            params.Context,
-		Client:             params.HTTPClient,
-	}
-	for _, opt := range opts {
-		opt(op)
-	}
-
-	result, err := a.transport.Submit(op)
-	if err != nil {
-		return nil, err
-	}
-	success, ok := result.(*DecisionsOK)
-	if ok {
-		return success, nil
-	}
-	// unexpected success response
-	// safeguard: normally, absent a default response, unknown success responses return an error above: so this is a codegen issue
-	msg := fmt.Sprintf("unexpected success response for decisions: API contract not enforced by server. Client expected to get an error, but got: %T", result)
-	panic(msg)
 }
 
 /*
@@ -349,6 +307,94 @@ func (a *Client) ListRules(params *ListRulesParams, opts ...ClientOption) (*List
 	// unexpected success response
 	// safeguard: normally, absent a default response, unknown success responses return an error above: so this is a codegen issue
 	msg := fmt.Sprintf("unexpected success response for listRules: API contract not enforced by server. Client expected to get an error, but got: %T", result)
+	panic(msg)
+}
+
+/*
+  MakeGenericDecision accesses control generic decision API
+
+  > This endpoint works with all HTTP Methods (GET, POST, PUT, ...) and matches every path prefixed with /decision.
+
+This endpoint mirrors the proxy capability of ORY Oathkeeper's proxy functionality but instead of forwarding the
+request to the upstream server, returns 200 (request should be allowed), 401 (unauthorized), or 403 (forbidden)
+status codes. This endpoint can be used to integrate with other API Proxies like Ambassador, Kong, Envoy, and many more.
+*/
+func (a *Client) MakeGenericDecision(params *MakeGenericDecisionParams,  opts ...ClientOption) (*MakeGenericDecisionOK, error) {
+	// TODO: Validate the params before sending
+	if params == nil {
+		params = NewMakeGenericDecisionParams()
+	}
+
+	op := &runtime.ClientOperation{
+		ID:                 "makeGenericDecision",
+		Method:             "GET",
+		PathPattern:        "/decisions/generic",
+		ProducesMediaTypes: []string{"application/json"},
+		ConsumesMediaTypes: []string{"application/json"},
+		Schemes:            []string{"http", "https"},
+		Params:             params,
+		Reader:             &MakeGenericDecisionReader{formats: a.formats},
+		Context:            params.Context,
+		Client:             params.HTTPClient,
+	}
+	for _, opt := range opts {
+		opt(op)
+	}
+
+	result, err := a.transport.Submit(op)
+	if err != nil {
+		return nil, err
+	}
+	success, ok := result.(*MakeGenericDecisionOK)
+	if ok {
+		return success, nil
+	}
+	// unexpected success response
+	// safeguard: normally, absent a default response, unknown success responses return an error above: so this is a codegen issue
+	msg := fmt.Sprintf("unexpected success response for makeGenericDecision: API contract not enforced by server. Client expected to get an error, but got: %T", result)
+	panic(msg)
+}
+
+/*
+  MakeTraefikDecision accesses control decision traefik API
+
+  This endpoint mirrors the proxy capability of ORY Oathkeeper's proxy functionality but instead of forwarding the
+request to the upstream server, returns 200 (request should be allowed), 401 (unauthorized), or 403 (forbidden)
+status codes. This endpoint can be used to integrate with the Traefik proxy.
+*/
+func (a *Client) MakeTraefikDecision(params *MakeTraefikDecisionParams) (*MakeTraefikDecisionOK, error) {
+	// TODO: Validate the params before sending
+	if params == nil {
+		params = NewMakeTraefikDecisionParams()
+	}
+
+	op := &runtime.ClientOperation{
+		ID:                 "makeTraefikDecision",
+		Method:             "GET",
+		PathPattern:        "/decisions/traefik",
+		ProducesMediaTypes: []string{"application/json"},
+		ConsumesMediaTypes: []string{"application/json"},
+		Schemes:            []string{"http", "https"},
+		Params:             params,
+		Reader:             &MakeTraefikDecisionReader{formats: a.formats},
+		Context:            params.Context,
+		Client:             params.HTTPClient,
+	}
+	for _, opt := range opts {
+		opt(op)
+	}
+
+	result, err := a.transport.Submit(op)
+	if err != nil {
+		return nil, err
+	}
+	success, ok := result.(*MakeTraefikDecisionOK)
+	if ok {
+		return success, nil
+	}
+	// unexpected success response
+	// safeguard: normally, absent a default response, unknown success responses return an error above: so this is a codegen issue
+	msg := fmt.Sprintf("unexpected success response for makeTraefikDecision: API contract not enforced by server. Client expected to get an error, but got: %T", result)
 	panic(msg)
 }
 
