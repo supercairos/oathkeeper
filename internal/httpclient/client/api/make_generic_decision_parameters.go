@@ -67,7 +67,7 @@ type MakeGenericDecisionParams struct {
 // WithDefaults hydrates default values in the decisions params (not the query body).
 //
 // All values with no default are reset to their zero value.
-func (o *MakeGenericDecisionParams) WithDefaults() *DecisionsParams {
+func (o *MakeGenericDecisionParams) WithDefaults() *MakeGenericDecisionParams {
 	o.SetDefaults()
 	return o
 }

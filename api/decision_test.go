@@ -21,7 +21,6 @@
 package api_test
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"io/ioutil"
@@ -55,7 +54,7 @@ func TestDecisionAPI(t *testing.T) {
 	viper.Set(configuration.ViperKeyMutatorNoopIsEnabled, true)
 	viper.Set(configuration.ViperKeyErrorsWWWAuthenticateIsEnabled, true)
 	reg := internal.NewRegistry(conf).WithBrokenPipelineMutator()
-
+	
 	n := negroni.New()
 	n.Use(reg.DecisionHandler())
 	n.Use(reg.DecisionTraefikHandler())
@@ -95,10 +94,11 @@ func TestDecisionAPI(t *testing.T) {
 	}
 
 	deciders := []string{
-		// "generic",
+		"generic",
 		"traefik",
 	}
-	defaultTransformers := map[string]func(r *http.Request){
+	defaultTransform := map[string]func(r *http.Request){
+		"generic": func(r *http.Request) {},
 		"traefik": func(r *http.Request) {
 			r.Header.Set(api.TraefikProto, r.URL.Scheme)
 			r.Header.Set(api.TraefikHost, r.URL.Host)
@@ -117,7 +117,7 @@ func TestDecisionAPI(t *testing.T) {
 		messages    []string
 		rulesRegexp []rule.Rule
 		rulesGlob   []rule.Rule
-		transformers map[string]func(r *http.Request)
+		transform   func(r *http.Request)
 		authz       string
 		d           string
 	}{
@@ -141,14 +141,8 @@ func TestDecisionAPI(t *testing.T) {
 			rulesRegexp: []rule.Rule{ruleNoOpAuthenticator},
 			rulesGlob:   []rule.Rule{ruleNoOpAuthenticatorGLOB},
 			code:        http.StatusOK,
-			transformers: map[string]func(r *http.Request){
-				"generic": func(r *http.Request) {
-					r.Header.Add("Authorization", "bearer token")
-				},
-				"traefik": func(r *http.Request) {
-					r.Header.Add("Authorization", "bearer token")
-					defaultTransformers["traefik"](r)
-				},
+			transform: func(r *http.Request) {
+				r.Header.Add("Authorization", "bearer token")
 			},
 			authz: "bearer token",
 		},
@@ -158,14 +152,8 @@ func TestDecisionAPI(t *testing.T) {
 			rulesRegexp: []rule.Rule{ruleNoOpAuthenticatorModifyUpstream},
 			rulesGlob:   []rule.Rule{ruleNoOpAuthenticatorModifyUpstreamGLOB},
 			code:        http.StatusOK,
-			transformers: map[string]func(r *http.Request){
-				"generic": func(r *http.Request) {
-					r.Header.Add("Authorization", "bearer token")
-				},
-				"traefik": func(r *http.Request) {
-					r.Header.Add("Authorization", "bearer token")
-					defaultTransformers["traefik"](r)
-				},
+			transform: func(r *http.Request) {
+				r.Header.Add("Authorization", "bearer token")
 			},
 			authz: "bearer token",
 		},
@@ -182,14 +170,8 @@ func TestDecisionAPI(t *testing.T) {
 				Authenticators: []rule.Handler{{Handler: "anonymous"}},
 				Upstream:       rule.Upstream{URL: ""},
 			}},
-			transformers: map[string]func(r *http.Request){
-				"generic": func(r *http.Request) {
-					r.Header.Add("Authorization", "bearer token")
-				},
-				"traefik": func(r *http.Request) {
-					r.Header.Add("Authorization", "bearer token")
-					defaultTransformers["traefik"](r)
-				},
+			transform: func(r *http.Request) {
+				r.Header.Add("Authorization", "bearer token")
 			},
 			code: http.StatusUnauthorized,
 		},
@@ -340,59 +322,44 @@ func TestDecisionAPI(t *testing.T) {
 				Mutators:       []rule.Handler{{Handler: "noop"}},
 				Upstream:       rule.Upstream{URL: ""},
 			}},
-			reqBody: []byte("non-empty body"),
-			transformers: map[string]func(r *http.Request){
-				"generic": func(r *http.Request) {
-					r.Header.Add("Content-Length", "1337")
-				},
-				"traefik": func(r *http.Request) {
-					r.Header.Add("Content-Length", "1337")
-					defaultTransformers["traefik"](r)
-				},
+			reqBody: []byte("non-empty body\000"),
+			transform: func(r *http.Request) {
+				r.Header.Add("Content-Length", "1337")
 			},
 			code:  http.StatusOK,
 			authz: "",
 		},
 	} {
-		testFunc := func(t *testing.T, strategy configuration.MatchingStrategy, decider string) {
-			require.NoError(t, reg.RuleRepository().SetMatchingStrategy(context.Background(), strategy))
-			req, err := http.NewRequest("GET", ts.URL+"/decisions/"+decider+tc.url, bytes.NewBuffer(tc.reqBody))
-			require.NoError(t, err)
-
-			var transformer func(*http.Request)
-			if tc.transformers != nil {
-				transformer, _ = tc.transformers[decider]
-			}
-			if transformer == nil {
-				transformer, _ = defaultTransformers[decider]
-			}
-
-			if transformer != nil {
-				transformer(req)
-			}
-
-			res, err := http.DefaultClient.Do(req)
-			require.NoError(t, err)
-
-			entireBody, err := ioutil.ReadAll(res.Body)
-			require.NoError(t, err)
-			defer res.Body.Close()
-
-			assert.Equal(t, tc.authz, res.Header.Get("Authorization"))
-			assert.Equal(t, tc.code, res.StatusCode)
-			assert.Equal(t, strconv.Itoa(len(entireBody)), res.Header.Get("Content-Length"))
-		}
-
 		for _, decider := range deciders {
 			t.Run(fmt.Sprintf("decider=%s/case=%d/description=%s", decider, k, tc.d), func(t *testing.T) {
+				testFunc := func(strategy configuration.MatchingStrategy, decider string) {
+					require.NoError(t, reg.RuleRepository().SetMatchingStrategy(context.Background(), strategy))
+					req, err := http.NewRequest("GET",  ts.URL + "/decisions/" + decider + tc.url, nil)
+					require.NoError(t, err)
+					if tc.transform != nil {
+						tc.transform(req)
+					}
+					defaultTransform[decider](req)
+					req.Close = true
+
+					res, err := http.DefaultClient.Do(req)
+					require.NoError(t, err)
+
+					entireBody, err := ioutil.ReadAll(res.Body)
+					require.NoError(t, err)
+					defer res.Body.Close()
+
+					assert.Equal(t, tc.authz, res.Header.Get("Authorization"))
+					assert.Equal(t, tc.code, res.StatusCode)
+					assert.Equal(t, strconv.Itoa(len(entireBody)), res.Header.Get("Content-Length"))
+				}
 				t.Run("regexp", func(t *testing.T) {
 					reg.RuleRepository().(*rule.RepositoryMemory).WithRules(tc.rulesRegexp)
-					testFunc(t, configuration.Regexp, decider)
+					testFunc(configuration.Regexp, decider)
 				})
-
 				t.Run("glob", func(t *testing.T) {
 					reg.RuleRepository().(*rule.RepositoryMemory).WithRules(tc.rulesRegexp)
-					testFunc(t, configuration.Glob, decider)
+					testFunc(configuration.Glob, decider)
 				})
 			})
 		}

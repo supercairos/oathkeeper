@@ -42,9 +42,9 @@ type ClientService interface {
 
 	ListRules(params *ListRulesParams, opts ...ClientOption) (*ListRulesOK, error)
 
-	MakeGenericDecision(params *MakeGenericDecisionParams) (*MakeGenericDecisionOK, opts ...ClientOption, error)
+	MakeGenericDecision(params *MakeGenericDecisionParams, opts ...ClientOption) (*MakeGenericDecisionOK, error)
 
-	MakeTraefikDecision(params *MakeTraefikDecisionParams) (*MakeTraefikDecisionOK, opts ...ClientOption, error)
+	MakeTraefikDecision(params *MakeTraefikDecisionParams, opts ...ClientOption) (*MakeTraefikDecisionOK, error)
 
 	SetTransport(transport runtime.ClientTransport)
 }
@@ -362,7 +362,7 @@ func (a *Client) MakeGenericDecision(params *MakeGenericDecisionParams,  opts ..
 request to the upstream server, returns 200 (request should be allowed), 401 (unauthorized), or 403 (forbidden)
 status codes. This endpoint can be used to integrate with the Traefik proxy.
 */
-func (a *Client) MakeTraefikDecision(params *MakeTraefikDecisionParams) (*MakeTraefikDecisionOK, error) {
+func (a *Client) MakeTraefikDecision(params *MakeTraefikDecisionParams,  opts ...ClientOption) (*MakeTraefikDecisionOK, error) {
 	// TODO: Validate the params before sending
 	if params == nil {
 		params = NewMakeTraefikDecisionParams()

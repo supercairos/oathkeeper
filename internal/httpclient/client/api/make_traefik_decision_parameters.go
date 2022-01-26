@@ -67,7 +67,7 @@ type MakeTraefikDecisionParams struct {
 // WithDefaults hydrates default values in the decisions params (not the query body).
 //
 // All values with no default are reset to their zero value.
-func (o *MakeTraefikDecisionParams) WithDefaults() *DecisionsParams {
+func (o *MakeTraefikDecisionParams) WithDefaults() *MakeTraefikDecisionParams {
 	o.SetDefaults()
 	return o
 }
