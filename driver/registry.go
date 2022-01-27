@@ -34,7 +34,8 @@ type Registry interface {
 	HealthEventManager() health.EventManager
 	HealthHandler() *healthx.Handler
 	RuleHandler() *api.RuleHandler
-	DecisionHandler() *api.DecisionHandler
+	DecisionHandler() *api.DecisionGenericHandler
+	DecisionTraefikHandler() *api.DecisionTraefikHandler
 	CredentialHandler() *api.CredentialsHandler
 
 	Proxy() *proxy.Proxy

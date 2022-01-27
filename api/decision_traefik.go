@@ -22,9 +22,8 @@ package api
 
 import (
 	"net/http"
-	"strings"
+	"net/url"
 
-	"github.com/ory/oathkeeper/pipeline/authn"
 	"github.com/ory/oathkeeper/x"
 
 	"github.com/ory/oathkeeper/proxy"
@@ -32,10 +31,14 @@ import (
 )
 
 const (
-	DecisionPath = "/decisions"
+	DecisionTraefikPath = "/decisions/traefik"
+	TraefikProto        = "X-Forwarded-Proto"
+	TraefikHost         = "X-Forwarded-Host"
+	TraefikURI          = "X-Forwarded-Uri"
+	TraefikMethod       = "X-Forwarded-Method"
 )
 
-type decisionHandlerRegistry interface {
+type decisionTraefikHandlerRegistry interface {
 	x.RegistryWriter
 	x.RegistryLogger
 
@@ -43,38 +46,35 @@ type decisionHandlerRegistry interface {
 	ProxyRequestHandler() *proxy.RequestHandler
 }
 
-type DecisionHandler struct {
-	r decisionHandlerRegistry
+type DecisionTraefikHandler struct {
+	r decisionTraefikHandlerRegistry
 }
 
-func NewJudgeHandler(r decisionHandlerRegistry) *DecisionHandler {
-	return &DecisionHandler{r: r}
+func NewDecisionTraefikerHandler(r decisionTraefikHandlerRegistry) *DecisionTraefikHandler {
+	return &DecisionTraefikHandler{r: r}
 }
 
-func (h *DecisionHandler) ServeHTTP(w http.ResponseWriter, r *http.Request, next http.HandlerFunc) {
-	if len(r.URL.Path) >= len(DecisionPath) && r.URL.Path[:len(DecisionPath)] == DecisionPath {
+func (h *DecisionTraefikHandler) ServeHTTP(w http.ResponseWriter, r *http.Request, next http.HandlerFunc) {
+	if r.Method == "GET" && len(r.URL.Path) >= len(DecisionTraefikPath) && r.URL.Path[:len(DecisionTraefikPath)] == DecisionTraefikPath {
 		r.URL.Scheme = "http"
 		r.URL.Host = r.Host
-		if r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https") {
+		if r.TLS != nil {
 			r.URL.Scheme = "https"
 		}
-		r.URL.Path = r.URL.Path[len(DecisionPath):]
 
-		h.decisions(w, r)
+		h.decisionTraefik(w, r)
 	} else {
 		next(w, r)
 	}
 }
 
-// swagger:route GET /decisions api decisions
+// swagger:route GET /decisions/traefik api makeTraefikDecision
 //
-// Access Control Decision API
-//
-// > This endpoint works with all HTTP Methods (GET, POST, PUT, ...) and matches every path prefixed with /decision.
+// Access Control Decision Traefik API
 //
 // This endpoint mirrors the proxy capability of ORY Oathkeeper's proxy functionality but instead of forwarding the
 // request to the upstream server, returns 200 (request should be allowed), 401 (unauthorized), or 403 (forbidden)
-// status codes. This endpoint can be used to integrate with other API Proxies like Ambassador, Kong, Envoy, and many more.
+// status codes. This endpoint can be used to integrate with the Traefik proxy.
 //
 //     Schemes: http, https
 //
@@ -84,23 +84,19 @@ func (h *DecisionHandler) ServeHTTP(w http.ResponseWriter, r *http.Request, next
 //       403: genericError
 //       404: genericError
 //       500: genericError
-func (h *DecisionHandler) decisions(w http.ResponseWriter, r *http.Request) {
-	fields := map[string]interface{}{
-		"http_method":     r.Method,
-		"http_url":        r.URL.String(),
-		"http_host":       r.Host,
-		"http_user_agent": r.UserAgent(),
+func (h *DecisionTraefikHandler) decisionTraefik(w http.ResponseWriter, r *http.Request) {
+	urlToMatch := url.URL{
+		Scheme: r.Header.Get(TraefikProto),
+		Host:   r.Header.Get(TraefikHost),
+		Path:   r.Header.Get(TraefikURI),
 	}
+	methodToMatch := r.Header.Get(TraefikMethod)
 
-	if sess, ok := r.Context().Value(proxy.ContextKeySession).(*authn.AuthenticationSession); ok {
-		fields["subject"] = sess.Subject
-	}
-
-	rl, err := h.r.RuleMatcher().Match(r.Context(), r.Method, r.URL)
+	rl, err := h.r.RuleMatcher().Match(r.Context(), methodToMatch, &urlToMatch)
 	if err != nil {
 		h.r.Logger().WithError(err).
-			WithFields(fields).
 			WithField("granted", false).
+			WithField("access_url", urlToMatch.String()).
 			Warn("Access request denied")
 		h.r.ProxyRequestHandler().HandleError(w, r, rl, err)
 		return
@@ -109,22 +105,21 @@ func (h *DecisionHandler) decisions(w http.ResponseWriter, r *http.Request) {
 	s, err := h.r.ProxyRequestHandler().HandleRequest(r, rl)
 	if err != nil {
 		h.r.Logger().WithError(err).
-			WithFields(fields).
 			WithField("granted", false).
-			Info("Access request denied")
-
+			WithField("access_url", urlToMatch.String()).
+			Warn("Access request denied")
 		h.r.ProxyRequestHandler().HandleError(w, r, rl, err)
 		return
 	}
 
 	h.r.Logger().
-		WithFields(fields).
 		WithField("granted", true).
-		Info("Access request granted")
+		WithField("access_url", urlToMatch.String()).
+		Warn("Access request granted")
 
 	for k := range s.Header {
 		// Avoid copying the original Content-Length header from the client
-		if strings.ToLower(k) == "content-length" {
+		if k == "content-length" {
 			continue
 		}
 
